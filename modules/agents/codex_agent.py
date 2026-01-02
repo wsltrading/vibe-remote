@@ -327,6 +327,8 @@ class CodexAgent(BaseAgent):
                     subtype="success",
                     started_at=request.started_at,
                     parse_mode=parse_mode,
+                    working_path=request.working_path,
+                    composite_session_id=request.composite_session_id,
                 )
                 request.last_agent_message = None
                 request.last_agent_message_parse_mode = None

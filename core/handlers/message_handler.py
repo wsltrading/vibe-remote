@@ -154,6 +154,18 @@ class MessageHandler:
             elif callback_data == "cmd_settings":
                 await settings_handler.handle_settings(context)
 
+            elif callback_data == "cmd_create_pr":
+                await command_handlers.handle_create_pr(context)
+
+            elif callback_data == "cmd_codex_review":
+                await command_handlers.handle_codex_review(context)
+
+            elif callback_data == "cmd_merge_pr":
+                await command_handlers.handle_merge_pr(context)
+
+            elif callback_data == "cmd_close_pr":
+                await command_handlers.handle_close_pr(context)
+
             elif (
                 callback_data.startswith("info_") and callback_data != "info_msg_types"
             ):

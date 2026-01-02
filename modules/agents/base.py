@@ -2,12 +2,69 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from modules.im import MessageContext
+from modules.im import MessageContext, InlineButton, InlineKeyboard
+
+
+def get_git_branch(working_path: str) -> Optional[str]:
+    """Get current git branch for a working directory."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=working_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def has_open_pr_for_branch(working_path: str, branch: str) -> bool:
+    """Check if the given branch already has an open PR using gh CLI."""
+    if not branch or branch in ("main", "master"):
+        return False
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"],
+            cwd=working_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            import json
+            prs = json.loads(result.stdout.strip() or "[]")
+            return len(prs) > 0
+    except Exception:
+        pass
+    return False
+
+
+def checkout_main_branch(working_path: str) -> Optional[str]:
+    """Checkout main or master branch. Returns the branch name if successful."""
+    for main_branch in ("main", "master"):
+        try:
+            result = subprocess.run(
+                ["git", "checkout", main_branch],
+                cwd=working_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return main_branch
+        except Exception:
+            pass
+    return None
 
 
 @dataclass
@@ -24,6 +81,8 @@ class AgentRequest:
     last_agent_message: Optional[str] = None
     last_agent_message_parse_mode: Optional[str] = None
     started_at: float = field(default_factory=time.monotonic)
+    # Flag to indicate this is a PR creation request, show Merge PR button after success
+    is_pr_creation: bool = False
 
 
 @dataclass
@@ -62,6 +121,8 @@ class BaseAgent(ABC):
         started_at: Optional[float] = None,
         parse_mode: str = "markdown",
         suffix: Optional[str] = None,
+        working_path: Optional[str] = None,
+        composite_session_id: Optional[str] = None,
     ) -> None:
         if duration_ms is None:
             duration_ms = self._calculate_duration_ms(started_at)
@@ -73,6 +134,96 @@ class BaseAgent(ABC):
         await self.controller.emit_agent_message(
             context, "result", formatted, parse_mode=parse_mode
         )
+
+        # Check if this session was creating a PR
+        is_pr_creation = False
+        if composite_session_id and composite_session_id in self.controller.pending_pr_sessions:
+            is_pr_creation = True
+            # Clear the flag
+            del self.controller.pending_pr_sessions[composite_session_id]
+
+        # After PR creation success, show Merge PR and Close PR buttons
+        if subtype == "success" and is_pr_creation:
+            await self._emit_pr_actions(context)
+        # After regular result message, show Create PR and Codex Review buttons
+        elif subtype == "success" and working_path:
+            await self._emit_post_task_actions(context, working_path)
+
+    async def _emit_post_task_actions(
+        self, context: MessageContext, working_path: str
+    ) -> None:
+        """Emit post-task action buttons with branch info.
+
+        Shows different buttons based on PR state:
+        - If branch has an open PR: show Merge PR / Close PR buttons
+        - If branch has no PR: show Create PR / Codex Review buttons
+        - Skip if on main/master branch or not a git repo
+        """
+        branch = get_git_branch(working_path)
+        if not branch:
+            # Not a git repo, skip the buttons
+            return
+
+        # Skip if on main/master branch
+        if branch in ("main", "master"):
+            return
+
+        # Build message with branch info
+        formatter = self.im_client.formatter
+        branch_info = f"🌿 Current Branch: {formatter.format_code_inline(branch)}"
+
+        # Check if branch already has an open PR
+        if has_open_pr_for_branch(working_path, branch):
+            # Show Merge PR and Close PR buttons
+            buttons = [
+                [
+                    InlineButton(text="✅ Merge PR", callback_data="cmd_merge_pr"),
+                    InlineButton(text="❌ Close PR", callback_data="cmd_close_pr"),
+                ]
+            ]
+            branch_info = f"🌿 Branch: {formatter.format_code_inline(branch)} (has open PR)"
+        else:
+            # Show Create PR and Codex Review buttons
+            buttons = [
+                [
+                    InlineButton(text="🚀 Create PR", callback_data="cmd_create_pr"),
+                    InlineButton(text="🔍 Codex Review", callback_data="cmd_codex_review"),
+                ]
+            ]
+
+        keyboard = InlineKeyboard(buttons=buttons)
+
+        target_context = self._get_target_context(context)
+        await self.im_client.send_message_with_buttons(
+            target_context, branch_info, keyboard
+        )
+
+    async def _emit_pr_actions(self, context: MessageContext) -> None:
+        """Emit PR action buttons (Merge PR, Close PR) after PR creation."""
+        buttons = [
+            [
+                InlineButton(text="✅ Merge PR", callback_data="cmd_merge_pr"),
+                InlineButton(text="❌ Close PR", callback_data="cmd_close_pr"),
+            ]
+        ]
+        keyboard = InlineKeyboard(buttons=buttons)
+
+        target_context = self._get_target_context(context)
+        await self.im_client.send_message_with_buttons(
+            target_context, "🎉 PR created! What would you like to do next?", keyboard
+        )
+
+    def _get_target_context(self, context: MessageContext) -> MessageContext:
+        """Return context for sending messages (respect Slack thread replies)."""
+        if self.im_client.should_use_thread_for_reply() and context.thread_id:
+            return MessageContext(
+                user_id=context.user_id,
+                channel_id=context.channel_id,
+                thread_id=context.thread_id,
+                message_id=context.message_id,
+                platform_specific=context.platform_specific,
+            )
+        return context
 
     @abstractmethod
     async def handle_message(self, request: AgentRequest) -> None:

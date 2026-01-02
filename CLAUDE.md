@@ -285,3 +285,48 @@ Different platforms have unique markdown requirements:
 
 - **Process Management**:
   - 不要直接执行杀进程来重启服务，使用./start.sh 会自动杀掉对应进程并重启
+
+## AI Workflow Instructions
+
+**IMPORTANT**: Claude Code should always follow these workflow instructions by default, without requiring user prompting.
+
+### Git Worktree Strategy for New Threads
+
+When starting work on a new feature or task that requires code changes:
+
+1. **Create a new branch from main/master**:
+   ```bash
+   git fetch origin
+   git branch feature/your-feature-name origin/master
+   ```
+
+2. **Use git worktree to isolate work**:
+   ```bash
+   # Create a worktree in a sibling directory to avoid interfering with other jobs
+   git worktree add ../vibe-remote-<feature-name> feature/your-feature-name
+   cd ../vibe-remote-<feature-name>
+   ```
+
+3. **Benefits of worktrees**:
+   - Multiple features can be developed in parallel without conflicts
+   - Each worktree has its own working directory and index
+   - No need to stash or commit work-in-progress when switching tasks
+   - Other jobs/sessions won't be affected by your changes
+
+4. **Cleanup after merging**:
+   ```bash
+   # After PR is merged, remove the worktree
+   git worktree remove ../vibe-remote-<feature-name>
+   git branch -d feature/your-feature-name
+   ```
+
+### Default AI Behavior
+
+Claude Code should automatically:
+
+- Follow all instructions in this CLAUDE.md file without being prompted
+- Use git worktrees for any new feature work to maintain isolation
+- Base new branches off the main branch (master)
+- Keep commits atomic and well-documented
+- Run tests before committing when applicable
+- Use `./restart.sh` for service restarts (never kill processes directly)
