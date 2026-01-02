@@ -33,6 +33,8 @@ class Controller:
         self.claude_sessions: Dict[str, Any] = {}
         self.receiver_tasks: Dict[str, asyncio.Task] = {}
         self.stored_session_mappings: Dict[str, str] = {}
+        # Track sessions that are creating PRs (composite_session_id -> True)
+        self.pending_pr_sessions: Dict[str, bool] = {}
 
         # Initialize core modules
         self._init_modules()

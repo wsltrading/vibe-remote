@@ -179,6 +179,8 @@ class ClaudeAgent(BaseAgent):
                             duration_ms=getattr(message, "duration_ms", 0),
                             parse_mode="markdown",
                             suffix=suffix,
+                            working_path=working_path,
+                            composite_session_id=composite_key,
                         )
                         self._last_assistant_text.pop(composite_key, None)
                         session = await self.session_manager.get_or_create_session(

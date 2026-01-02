@@ -343,3 +343,200 @@ Use the buttons below to manage your {agent_display_name} sessions, or simply ty
                 context,  # Use original context
                 f"❌ Error sending stop command: {str(e)}",
             )
+
+    async def handle_create_pr(self, context: MessageContext, args: str = ""):
+        """Handle Create PR button - send PR creation request to the agent in thread"""
+        try:
+            session_handler = self.controller.session_handler
+            base_session_id, working_path, composite_key = (
+                session_handler.get_session_info(context)
+            )
+            settings_key = self.controller._get_settings_key(context)
+            agent_name = self.controller.agent_router.resolve(
+                self.config.platform, settings_key
+            )
+
+            # PR message with branch check and rebase instructions
+            pr_message = (
+                "Before creating a PR, please:\n"
+                "1. Check the current branch with `git branch`\n"
+                "2. Fetch latest main branch with `git fetch origin main`\n"
+                "3. Rebase onto main with `git rebase origin/main`\n"
+                "4. If rebase has conflicts, resolve them\n"
+                "5. Push the changes with `git push -f` if needed\n"
+                "6. Create a pull request using `gh pr create`"
+            )
+
+            request = AgentRequest(
+                context=context,
+                message=pr_message,
+                working_path=working_path,
+                base_session_id=base_session_id,
+                composite_session_id=composite_key,
+                settings_key=settings_key,
+                is_pr_creation=True,
+            )
+
+            # Mark this session as creating PR
+            self.controller.pending_pr_sessions[composite_key] = True
+
+            # Send acknowledgment in thread
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, "🚀 Checking branch and preparing pull request..."
+            )
+
+            # Route to agent service
+            await self.controller.agent_service.handle_message(agent_name, request)
+
+        except Exception as e:
+            logger.error(f"Error creating PR: {e}", exc_info=True)
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, f"❌ Error creating pull request: {str(e)}"
+            )
+
+    async def handle_codex_review(self, context: MessageContext, args: str = ""):
+        """Handle Codex Review button - request code review from Codex agent"""
+        try:
+            session_handler = self.controller.session_handler
+            base_session_id, working_path, composite_key = (
+                session_handler.get_session_info(context)
+            )
+            settings_key = self.controller._get_settings_key(context)
+
+            # Always use codex agent for review
+            agent_name = "codex"
+
+            # Review message
+            review_message = (
+                "Please review the code changes in this branch. "
+                "Check for:\n"
+                "1. Code quality and best practices\n"
+                "2. Potential bugs or issues\n"
+                "3. Security concerns\n"
+                "4. Performance considerations\n"
+                "5. Any improvements that could be made"
+            )
+
+            request = AgentRequest(
+                context=context,
+                message=review_message,
+                working_path=working_path,
+                base_session_id=base_session_id,
+                composite_session_id=composite_key,
+                settings_key=settings_key,
+            )
+
+            # Send acknowledgment in thread
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, "🔍 Starting Codex code review..."
+            )
+
+            # Route to codex agent
+            await self.controller.agent_service.handle_message(agent_name, request)
+
+        except Exception as e:
+            logger.error(f"Error starting Codex review: {e}", exc_info=True)
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, f"❌ Error starting code review: {str(e)}"
+            )
+
+    async def handle_merge_pr(self, context: MessageContext, args: str = ""):
+        """Handle Merge PR button - merge the PR"""
+        try:
+            session_handler = self.controller.session_handler
+            base_session_id, working_path, composite_key = (
+                session_handler.get_session_info(context)
+            )
+            settings_key = self.controller._get_settings_key(context)
+            agent_name = self.controller.agent_router.resolve(
+                self.config.platform, settings_key
+            )
+
+            # Merge PR message
+            merge_message = (
+                "Please merge the PR that was just created. "
+                "Use `gh pr merge --squash --delete-branch` to merge with squash and delete the branch."
+            )
+
+            request = AgentRequest(
+                context=context,
+                message=merge_message,
+                working_path=working_path,
+                base_session_id=base_session_id,
+                composite_session_id=composite_key,
+                settings_key=settings_key,
+            )
+
+            # Send acknowledgment in thread
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, "✅ Merging pull request..."
+            )
+
+            # Route to agent service
+            await self.controller.agent_service.handle_message(agent_name, request)
+
+        except Exception as e:
+            logger.error(f"Error merging PR: {e}", exc_info=True)
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, f"❌ Error merging pull request: {str(e)}"
+            )
+
+    async def handle_close_pr(self, context: MessageContext, args: str = ""):
+        """Handle Close PR button - close the PR without merging"""
+        try:
+            session_handler = self.controller.session_handler
+            base_session_id, working_path, composite_key = (
+                session_handler.get_session_info(context)
+            )
+            settings_key = self.controller._get_settings_key(context)
+            agent_name = self.controller.agent_router.resolve(
+                self.config.platform, settings_key
+            )
+
+            # Close PR message
+            close_message = (
+                "Please close the PR that was just created without merging. "
+                "Use `gh pr close` to close the PR."
+            )
+
+            request = AgentRequest(
+                context=context,
+                message=close_message,
+                working_path=working_path,
+                base_session_id=base_session_id,
+                composite_session_id=composite_key,
+                settings_key=settings_key,
+            )
+
+            # Send acknowledgment in thread
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, "❌ Closing pull request..."
+            )
+
+            # Route to agent service
+            await self.controller.agent_service.handle_message(agent_name, request)
+
+        except Exception as e:
+            logger.error(f"Error closing PR: {e}", exc_info=True)
+            target_context = self._get_target_context(context)
+            await self.im_client.send_message(
+                target_context, f"❌ Error closing pull request: {str(e)}"
+            )
+
+    def _get_target_context(self, context: MessageContext) -> MessageContext:
+        """Get target context for sending messages (respects thread replies)"""
+        if self.config.platform == "slack" and context.thread_id:
+            return MessageContext(
+                user_id=context.user_id,
+                channel_id=context.channel_id,
+                thread_id=context.thread_id,
+                platform_specific=context.platform_specific,
+            )
+        return context
