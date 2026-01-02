@@ -152,12 +152,12 @@ class BaseAgent(ABC):
     async def _emit_post_task_actions(
         self, context: MessageContext, working_path: str
     ) -> None:
-        """Emit post-task action buttons (Create PR, Codex Review) with branch info.
+        """Emit post-task action buttons with branch info.
 
-        Skip showing buttons if:
-        - Not a git repo
-        - On main/master branch (no PR needed)
-        - Branch already has an open PR
+        Shows different buttons based on PR state:
+        - If branch has an open PR: show Merge PR / Close PR buttons
+        - If branch has no PR: show Create PR / Codex Review buttons
+        - Skip if on main/master branch or not a git repo
         """
         branch = get_git_branch(working_path)
         if not branch:
@@ -168,20 +168,29 @@ class BaseAgent(ABC):
         if branch in ("main", "master"):
             return
 
-        # Skip if branch already has an open PR
-        if has_open_pr_for_branch(working_path, branch):
-            return
-
-        # Build message with branch info and action buttons
+        # Build message with branch info
         formatter = self.im_client.formatter
         branch_info = f"🌿 Current Branch: {formatter.format_code_inline(branch)}"
 
-        buttons = [
-            [
-                InlineButton(text="🚀 Create PR", callback_data="cmd_create_pr"),
-                InlineButton(text="🔍 Codex Review", callback_data="cmd_codex_review"),
+        # Check if branch already has an open PR
+        if has_open_pr_for_branch(working_path, branch):
+            # Show Merge PR and Close PR buttons
+            buttons = [
+                [
+                    InlineButton(text="✅ Merge PR", callback_data="cmd_merge_pr"),
+                    InlineButton(text="❌ Close PR", callback_data="cmd_close_pr"),
+                ]
             ]
-        ]
+            branch_info = f"🌿 Branch: {formatter.format_code_inline(branch)} (has open PR)"
+        else:
+            # Show Create PR and Codex Review buttons
+            buttons = [
+                [
+                    InlineButton(text="🚀 Create PR", callback_data="cmd_create_pr"),
+                    InlineButton(text="🔍 Codex Review", callback_data="cmd_codex_review"),
+                ]
+            ]
+
         keyboard = InlineKeyboard(buttons=buttons)
 
         target_context = self._get_target_context(context)
