@@ -330,3 +330,4 @@ Claude Code should automatically:
 - Keep commits atomic and well-documented
 - Run tests before committing when applicable
 - Use `./restart.sh` for service restarts (never kill processes directly)
+- Never include `Co-Authored-By` lines in commit messages or PR descriptions
