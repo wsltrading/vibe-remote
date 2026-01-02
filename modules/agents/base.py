@@ -174,11 +174,12 @@ class BaseAgent(ABC):
 
         # Check if branch already has an open PR
         if has_open_pr_for_branch(working_path, branch):
-            # Show Merge PR and Close PR buttons
+            # Show Merge PR, Close PR, and Codex Review buttons
             buttons = [
                 [
                     InlineButton(text="✅ Merge PR", callback_data="cmd_merge_pr"),
                     InlineButton(text="❌ Close PR", callback_data="cmd_close_pr"),
+                    InlineButton(text="🔍 Codex Review", callback_data="cmd_codex_review"),
                 ]
             ]
             branch_info = f"🌿 Branch: {formatter.format_code_inline(branch)} (has open PR)"
@@ -199,11 +200,12 @@ class BaseAgent(ABC):
         )
 
     async def _emit_pr_actions(self, context: MessageContext) -> None:
-        """Emit PR action buttons (Merge PR, Close PR) after PR creation."""
+        """Emit PR action buttons (Merge PR, Close PR, Codex Review) after PR creation."""
         buttons = [
             [
                 InlineButton(text="✅ Merge PR", callback_data="cmd_merge_pr"),
                 InlineButton(text="❌ Close PR", callback_data="cmd_close_pr"),
+                InlineButton(text="🔍 Codex Review", callback_data="cmd_codex_review"),
             ]
         ]
         keyboard = InlineKeyboard(buttons=buttons)
