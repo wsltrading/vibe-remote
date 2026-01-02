@@ -28,6 +28,45 @@ def get_git_branch(working_path: str) -> Optional[str]:
     return None
 
 
+def has_open_pr_for_branch(working_path: str, branch: str) -> bool:
+    """Check if the given branch already has an open PR using gh CLI."""
+    if not branch or branch in ("main", "master"):
+        return False
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"],
+            cwd=working_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            import json
+            prs = json.loads(result.stdout.strip() or "[]")
+            return len(prs) > 0
+    except Exception:
+        pass
+    return False
+
+
+def checkout_main_branch(working_path: str) -> Optional[str]:
+    """Checkout main or master branch. Returns the branch name if successful."""
+    for main_branch in ("main", "master"):
+        try:
+            result = subprocess.run(
+                ["git", "checkout", main_branch],
+                cwd=working_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return main_branch
+        except Exception:
+            pass
+    return None
+
+
 @dataclass
 class AgentRequest:
     """Normalized agent invocation request."""
@@ -113,10 +152,24 @@ class BaseAgent(ABC):
     async def _emit_post_task_actions(
         self, context: MessageContext, working_path: str
     ) -> None:
-        """Emit post-task action buttons (Create PR, Codex Review) with branch info."""
+        """Emit post-task action buttons (Create PR, Codex Review) with branch info.
+
+        Skip showing buttons if:
+        - Not a git repo
+        - On main/master branch (no PR needed)
+        - Branch already has an open PR
+        """
         branch = get_git_branch(working_path)
         if not branch:
             # Not a git repo, skip the buttons
+            return
+
+        # Skip if on main/master branch
+        if branch in ("main", "master"):
+            return
+
+        # Skip if branch already has an open PR
+        if has_open_pr_for_branch(working_path, branch):
             return
 
         # Build message with branch info and action buttons
