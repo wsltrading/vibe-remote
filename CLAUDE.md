@@ -329,4 +329,4 @@ Claude Code should automatically:
 - Base new branches off the main branch (master)
 - Keep commits atomic and well-documented
 - Run tests before committing when applicable
-- Use `./start.sh` for service restarts (never kill processes directly)
+- Use `./restart.sh` for service restarts (never kill processes directly)
