@@ -37,6 +37,9 @@ class ClaudeAgent(BaseAgent):
             if request.status_updater:
                 self._status_updaters[request.composite_session_id] = request.status_updater
 
+            # Mark session as active when starting to process a message
+            self.controller.mark_session_active(request.composite_session_id)
+
             await client.query(
                 request.message, session_id=request.composite_session_id
             )
@@ -134,6 +137,9 @@ class ClaudeAgent(BaseAgent):
             composite_key = f"{base_session_id}:{working_path}"
             async for message in client.receive_messages():
                 try:
+                    # Update activity timestamp on each message received
+                    self.controller.mark_session_active(composite_key)
+
                     claude_session_id = self._maybe_capture_session_id(
                         message, base_session_id, working_path, settings_key
                     )
@@ -169,6 +175,8 @@ class ClaudeAgent(BaseAgent):
                             settings_key, message_type
                         ):
                             self._last_assistant_text.pop(composite_key, None)
+                            # Mark session as idle even when result is hidden
+                            self.controller.mark_session_idle(composite_key)
                             continue
                         result_text = getattr(message, "result", None)
                         if (
@@ -196,6 +204,8 @@ class ClaudeAgent(BaseAgent):
                             composite_session_id=composite_key,
                         )
                         self._last_assistant_text.pop(composite_key, None)
+                        # Mark session as idle after result is processed
+                        self.controller.mark_session_idle(composite_key)
                         session = await self.session_manager.get_or_create_session(
                             context.user_id, context.channel_id
                         )
@@ -238,6 +248,8 @@ class ClaudeAgent(BaseAgent):
 
                     if message_type == "result":
                         self._last_assistant_text.pop(composite_key, None)
+                        # Mark session as idle after result is processed
+                        self.controller.mark_session_idle(composite_key)
                         session = await self.session_manager.get_or_create_session(
                             context.user_id, context.channel_id
                         )

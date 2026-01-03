@@ -3,6 +3,7 @@
 import asyncio
 import os
 import logging
+import time
 from typing import Optional, Dict, Any, List, Tuple
 from config.settings import AppConfig
 from modules.im import BaseIMClient, MessageContext, IMFactory
@@ -35,6 +36,8 @@ class Controller:
         self.stored_session_mappings: Dict[str, str] = {}
         # Track sessions that are creating PRs (composite_session_id -> True)
         self.pending_pr_sessions: Dict[str, bool] = {}
+        # Track last activity timestamp per session (composite_session_id -> timestamp)
+        self.session_last_activity: Dict[str, float] = {}
 
         # Initialize core modules
         self._init_modules()
@@ -292,15 +295,38 @@ class Controller:
                 context, f"❌ Failed to change working directory: {str(e)}"
             )
 
-    def get_active_sessions(self) -> List[Tuple[str, MessageContext]]:
-        """Get all active sessions with in-progress receiver tasks.
+    def mark_session_active(self, composite_key: str) -> None:
+        """Mark a session as actively processing (updates last activity timestamp)."""
+        self.session_last_activity[composite_key] = time.time()
+
+    def mark_session_idle(self, composite_key: str) -> None:
+        """Mark a session as idle (removes from active tracking)."""
+        self.session_last_activity.pop(composite_key, None)
+
+    def is_session_recently_active(self, composite_key: str, threshold_seconds: float = 5.0) -> bool:
+        """Check if a session has been active within the threshold period."""
+        last_activity = self.session_last_activity.get(composite_key)
+        if last_activity is None:
+            return False
+        return (time.time() - last_activity) <= threshold_seconds
+
+    def get_active_sessions(self, activity_threshold_seconds: float = 5.0) -> List[Tuple[str, MessageContext]]:
+        """Get all sessions with recent activity (in-progress or recently finished).
 
         Returns a list of (composite_key, MessageContext) tuples for sessions
-        that have active receiver tasks (i.e., are currently processing).
+        that are currently processing or finished within the threshold period.
+
+        Args:
+            activity_threshold_seconds: Sessions active within this many seconds
+                are considered "in progress" for restart notifications.
         """
         active_sessions = []
 
         for composite_key, task in self.receiver_tasks.items():
+            # Only consider sessions with recent activity
+            if not self.is_session_recently_active(composite_key, activity_threshold_seconds):
+                continue
+
             if task and not task.done():
                 # Parse composite key: {base_session_id}:{working_path}
                 # base_session_id format: {platform}_{thread_id/channel_id}
