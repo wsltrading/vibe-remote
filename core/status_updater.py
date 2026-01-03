@@ -103,8 +103,12 @@ class StatusUpdater:
         self._running = True
         self._task = asyncio.create_task(self._update_loop())
 
-    async def stop(self) -> None:
-        """Stop the periodic update loop."""
+    async def stop(self, update_final: bool = True) -> None:
+        """Stop the periodic update loop.
+
+        Args:
+            update_final: If True, update the message to show completion status.
+        """
         self._running = False
         if self._task is not None:
             self._task.cancel()
@@ -113,3 +117,17 @@ class StatusUpdater:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+        # Update message to show completion
+        if update_final:
+            try:
+                elapsed = self._format_elapsed()
+                completion_text = f"✓ *{self._agent_name}* finished ({elapsed})"
+                await self._edit_message(
+                    self._channel_id,
+                    self._thread_id,
+                    self._message_id,
+                    completion_text
+                )
+            except Exception as e:
+                logger.debug(f"Failed to update completion status: {e}")

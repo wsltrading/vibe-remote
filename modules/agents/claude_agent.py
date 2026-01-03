@@ -154,6 +154,20 @@ class ClaudeAgent(BaseAgent):
                     # Update status based on message content
                     self._update_status_from_message(composite_key, message)
 
+                    # Extract and send images first
+                    images = self.claude_client.extract_images_from_message(message)
+                    for image in images:
+                        try:
+                            await self.im_client.send_photo(
+                                self._get_target_context(context),
+                                image_data=image.data,
+                                caption="📸 Screenshot",
+                                filename=image.filename,
+                            )
+                            logger.info(f"Sent image ({image.media_type}) to user")
+                        except Exception as img_err:
+                            logger.error(f"Failed to send image: {img_err}")
+
                     message_type = self._detect_message_type(message)
                     formatted_message = None
                     if message_type == "assistant":
@@ -268,10 +282,10 @@ class ClaudeAgent(BaseAgent):
                 f"Error in Claude receiver for session {composite_key}: {e}",
                 exc_info=True,
             )
-            # Clean up status updater on error
+            # Clean up status updater on error (don't show completion message)
             status_updater = self._status_updaters.pop(composite_key, None)
             if status_updater:
-                await status_updater.stop()
+                await status_updater.stop(update_final=False)
             await self.session_handler.handle_session_error(composite_key, context, e)
 
     async def _delete_ack(self, context: MessageContext, request: AgentRequest):

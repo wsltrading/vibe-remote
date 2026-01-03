@@ -115,13 +115,13 @@ class MessageHandler:
                 await self._handle_missing_agent(context, agent_name)
                 # Only stop/cleanup on error - normal flow is handled by agent
                 if request.status_updater:
-                    await request.status_updater.stop()
+                    await request.status_updater.stop(update_final=False)
                 if request.ack_message_id:
                     await self._delete_ack(context.channel_id, request)
             except Exception:
                 # Stop status updater on any error
                 if request.status_updater:
-                    await request.status_updater.stop()
+                    await request.status_updater.stop(update_final=False)
                 if request.ack_message_id:
                     await self._delete_ack(context.channel_id, request)
                 raise
