@@ -4,6 +4,7 @@ import os
 import logging
 from typing import Optional
 from modules.agents import AgentRequest, get_agent_display_name
+from modules.agents.base import get_git_branch
 from modules.im import MessageContext, InlineKeyboard, InlineButton
 
 logger = logging.getLogger(__name__)
@@ -352,6 +353,17 @@ Use the buttons below to manage your {agent_display_name} sessions, or simply ty
                 session_handler.get_session_info(context)
             )
             settings_key = self.controller._get_settings_key(context)
+
+            # Validate thread-branch association
+            is_valid, current_branch, tracked_branch = self._validate_thread_branch(
+                context, working_path
+            )
+            if not is_valid:
+                await self._send_branch_mismatch_error(
+                    context, current_branch, tracked_branch
+                )
+                return
+
             agent_name = self.controller.agent_router.resolve(
                 self.config.platform, settings_key
             )
@@ -452,6 +464,17 @@ Use the buttons below to manage your {agent_display_name} sessions, or simply ty
                 session_handler.get_session_info(context)
             )
             settings_key = self.controller._get_settings_key(context)
+
+            # Validate thread-branch association
+            is_valid, current_branch, tracked_branch = self._validate_thread_branch(
+                context, working_path
+            )
+            if not is_valid:
+                await self._send_branch_mismatch_error(
+                    context, current_branch, tracked_branch
+                )
+                return
+
             agent_name = self.controller.agent_router.resolve(
                 self.config.platform, settings_key
             )
@@ -480,6 +503,13 @@ Use the buttons below to manage your {agent_display_name} sessions, or simply ty
             # Route to agent service
             await self.controller.agent_service.handle_message(agent_name, request)
 
+            # After successful merge, clear the thread-branch association
+            # (the branch will be deleted, so no point tracking it)
+            self.settings_manager.clear_thread_branch(settings_key, base_session_id)
+            logger.info(
+                f"Cleared thread-branch association for {base_session_id} after PR merge"
+            )
+
         except Exception as e:
             logger.error(f"Error merging PR: {e}", exc_info=True)
             target_context = self._get_target_context(context)
@@ -495,6 +525,17 @@ Use the buttons below to manage your {agent_display_name} sessions, or simply ty
                 session_handler.get_session_info(context)
             )
             settings_key = self.controller._get_settings_key(context)
+
+            # Validate thread-branch association
+            is_valid, current_branch, tracked_branch = self._validate_thread_branch(
+                context, working_path
+            )
+            if not is_valid:
+                await self._send_branch_mismatch_error(
+                    context, current_branch, tracked_branch
+                )
+                return
+
             agent_name = self.controller.agent_router.resolve(
                 self.config.platform, settings_key
             )
@@ -523,6 +564,13 @@ Use the buttons below to manage your {agent_display_name} sessions, or simply ty
             # Route to agent service
             await self.controller.agent_service.handle_message(agent_name, request)
 
+            # After closing PR, clear the thread-branch association
+            # so the thread can work on a new branch if needed
+            self.settings_manager.clear_thread_branch(settings_key, base_session_id)
+            logger.info(
+                f"Cleared thread-branch association for {base_session_id} after PR close"
+            )
+
         except Exception as e:
             logger.error(f"Error closing PR: {e}", exc_info=True)
             target_context = self._get_target_context(context)
@@ -540,3 +588,56 @@ Use the buttons below to manage your {agent_display_name} sessions, or simply ty
                 platform_specific=context.platform_specific,
             )
         return context
+
+    def _validate_thread_branch(
+        self, context: MessageContext, working_path: str
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Validate that the current git branch matches the thread's tracked branch.
+
+        Returns:
+            (is_valid, current_branch, tracked_branch)
+            - is_valid: True if branch matches or no branch tracking exists
+            - current_branch: The current git branch (or None if not a git repo)
+            - tracked_branch: The branch tracked for this thread (or None if not tracked)
+        """
+        session_handler = self.controller.session_handler
+        base_session_id = session_handler.get_base_session_id(context)
+        settings_key = self.controller._get_settings_key(context)
+
+        current_branch = get_git_branch(working_path)
+        if not current_branch:
+            # Not a git repo - allow the action
+            return True, None, None
+
+        tracked_branch = self.settings_manager.get_thread_branch(
+            settings_key, base_session_id
+        )
+
+        if not tracked_branch:
+            # No branch tracked for this thread - allow the action
+            return True, current_branch, None
+
+        # Validate branch matches
+        if current_branch != tracked_branch:
+            logger.warning(
+                f"Branch mismatch for session {base_session_id}: "
+                f"expected {tracked_branch}, got {current_branch}"
+            )
+            return False, current_branch, tracked_branch
+
+        return True, current_branch, tracked_branch
+
+    async def _send_branch_mismatch_error(
+        self, context: MessageContext, current_branch: str, tracked_branch: str
+    ):
+        """Send an error message when thread-branch mismatch is detected."""
+        formatter = self.im_client.formatter
+        error_msg = (
+            f"❌ Branch mismatch detected!\n\n"
+            f"This thread was working on branch {formatter.format_code_inline(tracked_branch)}, "
+            f"but the working directory is now on {formatter.format_code_inline(current_branch)}.\n\n"
+            f"This can happen when multiple threads work on different branches in the same working directory.\n"
+            f"Please ensure the correct branch is checked out before proceeding."
+        )
+        target_context = self._get_target_context(context)
+        await self.im_client.send_message(target_context, error_msg)

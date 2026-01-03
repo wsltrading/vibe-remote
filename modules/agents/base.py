@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -9,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from modules.im import MessageContext, InlineButton, InlineKeyboard
+
+logger = logging.getLogger(__name__)
 
 
 def get_git_branch(working_path: str) -> Optional[str]:
@@ -150,7 +153,7 @@ class BaseAgent(ABC):
             await self._emit_post_task_actions(context, working_path)
 
     async def _emit_post_task_actions(
-        self, context: MessageContext, working_path: str
+        self, context: MessageContext, working_path: str, base_session_id: str = None
     ) -> None:
         """Emit post-task action buttons with branch info.
 
@@ -158,6 +161,7 @@ class BaseAgent(ABC):
         - If branch has an open PR: show Merge PR / Close PR buttons
         - If branch has no PR: show Create PR / Codex Review buttons
         - Skip if on main/master branch or not a git repo
+        - Validates thread-branch isolation to prevent cross-thread button confusion
         """
         branch = get_git_branch(working_path)
         if not branch:
@@ -167,6 +171,42 @@ class BaseAgent(ABC):
         # Skip if on main/master branch
         if branch in ("main", "master"):
             return
+
+        # Get settings key for thread branch tracking
+        settings_key = self.controller._get_settings_key(context)
+
+        # Get the base_session_id if not provided
+        if not base_session_id:
+            base_session_id = self.controller.session_handler.get_base_session_id(context)
+
+        # Track or validate thread-branch association
+        tracked_branch = self.settings_manager.get_thread_branch(settings_key, base_session_id)
+
+        if tracked_branch:
+            # This thread has an associated branch - validate it matches
+            if tracked_branch != branch:
+                # Branch mismatch! The working directory has a different branch
+                # than what this thread was working on. This likely means
+                # another thread changed the branch.
+                logger.warning(
+                    f"Branch mismatch for session {base_session_id}: "
+                    f"expected {tracked_branch}, got {branch}. "
+                    f"Skipping action buttons to prevent cross-thread confusion."
+                )
+                formatter = self.im_client.formatter
+                warning_msg = (
+                    f"⚠️ Branch mismatch detected!\n"
+                    f"This thread was working on {formatter.format_code_inline(tracked_branch)}, "
+                    f"but the working directory is now on {formatter.format_code_inline(branch)}.\n"
+                    f"Please check that the correct branch is checked out."
+                )
+                target_context = self._get_target_context(context)
+                await self.im_client.send_message(target_context, warning_msg)
+                return
+        else:
+            # First time seeing a non-main branch in this thread - track it
+            self.settings_manager.set_thread_branch(settings_key, base_session_id, branch)
+            logger.info(f"Associated thread {base_session_id} with branch {branch}")
 
         # Build message with branch info
         formatter = self.im_client.formatter
