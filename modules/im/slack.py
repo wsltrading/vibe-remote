@@ -96,6 +96,25 @@ class SlackBot(BaseIMClient):
         try:
             # Use the third-party converter for comprehensive markdown to mrkdwn conversion
             converted_text = self.markdown_converter.convert(text)
+
+            # Fix malformed Slack URLs where formatting characters are inside angle brackets
+            # This can happen when Claude outputs markdown like **text <url**> which becomes
+            # *text <url*> after conversion - we need to move the * outside the <>
+            import re
+
+            # Fix asterisks inside Slack URLs: <url*> -> <url>*
+            converted_text = re.sub(r'<([^>|]+)\*>', r'<\1>*', converted_text)
+            # Fix asterisks at start of Slack URLs: <*url> -> *<url>
+            converted_text = re.sub(r'<\*([^>|]+)>', r'*<\1>', converted_text)
+            # Fix underscores inside Slack URLs: <url_> -> <url>_
+            converted_text = re.sub(r'<([^>|]+)_>', r'<\1>_', converted_text)
+            # Fix underscores at start of Slack URLs: <_url> -> _<url>
+            converted_text = re.sub(r'<_([^>|]+)>', r'_<\1>', converted_text)
+            # Fix tildes inside Slack URLs: <url~> -> <url>~
+            converted_text = re.sub(r'<([^>|]+)~>', r'<\1>~', converted_text)
+            # Fix tildes at start of Slack URLs: <~url> -> ~<url>
+            converted_text = re.sub(r'<~([^>|]+)>', r'~<\1>', converted_text)
+
             return converted_text
         except Exception as e:
             logger.warning(
