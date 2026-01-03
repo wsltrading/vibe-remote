@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import signal
 import time
 from typing import Dict, Any, Optional, Callable
 from slack_sdk.web.async_client import AsyncWebClient
@@ -683,8 +684,30 @@ class SlackBot(BaseIMClient):
             async def start():
                 self._ensure_clients()
                 self.register_handlers()
+
+                # Setup signal handlers for graceful shutdown
+                loop = asyncio.get_event_loop()
+                shutdown_event = asyncio.Event()
+
+                def create_shutdown_handler(sig):
+                    def handler():
+                        logger.info(f"Received signal {sig.name}, initiating graceful shutdown...")
+                        # Schedule the shutdown sequence
+                        asyncio.ensure_future(self._graceful_shutdown(shutdown_event))
+                    return handler
+
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    try:
+                        loop.add_signal_handler(sig, create_shutdown_handler(sig))
+                        logger.info(f"Registered signal handler for {sig.name}")
+                    except NotImplementedError:
+                        logger.warning(f"Signal handler for {sig.name} not supported")
+
                 await self.socket_client.connect()
-                await asyncio.sleep(float("inf"))
+
+                # Wait until shutdown signal
+                await shutdown_event.wait()
+                logger.info("Shutdown complete")
 
             asyncio.run(start())
         else:
@@ -696,6 +719,32 @@ class SlackBot(BaseIMClient):
                 asyncio.run(asyncio.sleep(float("inf")))
             except KeyboardInterrupt:
                 logger.info("Shutting down...")
+
+    async def _graceful_shutdown(self, shutdown_event: asyncio.Event):
+        """Perform graceful shutdown with restart notifications."""
+        logger.info("Starting graceful shutdown sequence...")
+
+        # Call the shutdown callback if registered (sends restart notifications)
+        if self.on_shutdown_callback:
+            try:
+                logger.info("Calling shutdown callback for restart notifications...")
+                await self.on_shutdown_callback()
+            except Exception as e:
+                logger.error(f"Error in shutdown callback: {e}")
+
+        # Give a moment for messages to be sent
+        await asyncio.sleep(0.5)
+
+        # Disconnect socket client
+        try:
+            if self.socket_client:
+                await self.socket_client.disconnect()
+                logger.info("Socket client disconnected")
+        except Exception as e:
+            logger.warning(f"Error disconnecting socket client: {e}")
+
+        # Signal that shutdown is complete
+        shutdown_event.set()
 
     async def get_user_info(self, user_id: str) -> Dict[str, Any]:
         """Get information about a Slack user"""
