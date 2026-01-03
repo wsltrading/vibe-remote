@@ -113,12 +113,18 @@ class MessageHandler:
                 await self.controller.agent_service.handle_message(agent_name, request)
             except KeyError:
                 await self._handle_missing_agent(context, agent_name)
-            finally:
-                # Stop status updater first
+                # Only stop/cleanup on error - normal flow is handled by agent
                 if request.status_updater:
                     await request.status_updater.stop()
                 if request.ack_message_id:
                     await self._delete_ack(context.channel_id, request)
+            except Exception:
+                # Stop status updater on any error
+                if request.status_updater:
+                    await request.status_updater.stop()
+                if request.ack_message_id:
+                    await self._delete_ack(context.channel_id, request)
+                raise
         except Exception as e:
             logger.error(f"Error processing user message: {e}", exc_info=True)
             await self.im_client.send_message(

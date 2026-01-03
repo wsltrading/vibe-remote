@@ -181,8 +181,10 @@ class ClaudeAgent(BaseAgent):
                             if fallback:
                                 result_text = fallback
                         suffix = "---" if self.config.platform == "slack" else None
-                        # Clean up status updater before result message
-                        self._status_updaters.pop(composite_key, None)
+                        # Stop and clean up status updater before result message
+                        status_updater = self._status_updaters.pop(composite_key, None)
+                        if status_updater:
+                            await status_updater.stop()
                         await self.emit_result_message(
                             context,
                             result_text,
@@ -221,6 +223,12 @@ class ClaudeAgent(BaseAgent):
                     if self.config.platform == "slack":
                         formatted_message = formatted_message + "\n---"
 
+                    # Stop status updater before result message
+                    if message_type == "result":
+                        status_updater = self._status_updaters.pop(composite_key, None)
+                        if status_updater:
+                            await status_updater.stop()
+
                     await self.controller.emit_agent_message(
                         context,
                         message_type or "assistant",
@@ -248,6 +256,10 @@ class ClaudeAgent(BaseAgent):
                 f"Error in Claude receiver for session {composite_key}: {e}",
                 exc_info=True,
             )
+            # Clean up status updater on error
+            status_updater = self._status_updaters.pop(composite_key, None)
+            if status_updater:
+                await status_updater.stop()
             await self.session_handler.handle_session_error(composite_key, context, e)
 
     async def _delete_ack(self, context: MessageContext, request: AgentRequest):
