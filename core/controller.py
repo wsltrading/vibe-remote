@@ -3,7 +3,7 @@
 import asyncio
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from config.settings import AppConfig
 from modules.im import BaseIMClient, MessageContext, IMFactory
 from modules.im.formatters import TelegramFormatter, SlackFormatter
@@ -50,6 +50,9 @@ class Controller:
 
         # Background task for cleanup
         self.cleanup_task: Optional[asyncio.Task] = None
+
+        # Flag to track if restart notification has been sent
+        self._restart_notified = False
 
         # Restore session mappings on startup (after handlers are initialized)
         self.session_handler.restore_session_mappings()
@@ -131,6 +134,7 @@ class Controller:
             on_callback_query=self.message_handler.handle_callback_query,
             on_settings_update=self.handle_settings_update,
             on_change_cwd=self.handle_change_cwd_submission,
+            on_shutdown=self.send_restart_notifications,
         )
 
     # Utility methods used by handlers
@@ -288,6 +292,108 @@ class Controller:
                 context, f"❌ Failed to change working directory: {str(e)}"
             )
 
+    def get_active_sessions(self) -> List[Tuple[str, MessageContext]]:
+        """Get all active sessions with in-progress receiver tasks.
+
+        Returns a list of (composite_key, MessageContext) tuples for sessions
+        that have active receiver tasks (i.e., are currently processing).
+        """
+        active_sessions = []
+
+        for composite_key, task in self.receiver_tasks.items():
+            if task and not task.done():
+                # Parse composite key: {base_session_id}:{working_path}
+                # base_session_id format: {platform}_{thread_id/channel_id}
+                try:
+                    parts = composite_key.split(":", 1)
+                    if len(parts) != 2:
+                        continue
+
+                    base_session_id = parts[0]
+
+                    # Parse platform and ID from base_session_id
+                    if base_session_id.startswith("slack_"):
+                        thread_id = base_session_id[6:]  # Remove "slack_" prefix
+                        # For Slack, we need to find the channel_id from settings
+                        # The thread_ts alone is not enough; we need to look it up
+                        context = self._find_slack_context_for_thread(thread_id)
+                        if context:
+                            active_sessions.append((composite_key, context))
+                    elif base_session_id.startswith("telegram_"):
+                        channel_id = base_session_id[9:]  # Remove "telegram_" prefix
+                        context = MessageContext(
+                            user_id=channel_id,  # For Telegram, user_id can be same as channel for DMs
+                            channel_id=channel_id,
+                            thread_id=None,
+                        )
+                        active_sessions.append((composite_key, context))
+                except Exception as e:
+                    logger.warning(f"Failed to parse session key {composite_key}: {e}")
+                    continue
+
+        return active_sessions
+
+    def _find_slack_context_for_thread(self, thread_id: str) -> Optional[MessageContext]:
+        """Find the channel_id for a Slack thread from settings."""
+        # Iterate through all user settings to find the channel containing this thread
+        for user_id, user_settings in self.settings_manager.settings.items():
+            if hasattr(user_settings, 'active_slack_threads') and user_settings.active_slack_threads:
+                for channel_id, threads in user_settings.active_slack_threads.items():
+                    if thread_id in threads:
+                        return MessageContext(
+                            user_id=str(user_id),
+                            channel_id=channel_id,
+                            thread_id=thread_id,
+                        )
+
+        # If not found in active threads, try to extract from session mappings
+        # This covers cases where the thread might not be in active_slack_threads yet
+        for user_id, user_settings in self.settings_manager.settings.items():
+            if hasattr(user_settings, 'session_mappings') and user_settings.session_mappings:
+                for agent_name, agent_sessions in user_settings.session_mappings.items():
+                    for base_session_id in agent_sessions.keys():
+                        if base_session_id == f"slack_{thread_id}":
+                            # We found the session, but we need channel_id
+                            # For Slack, the settings_key (user_id in settings) IS the channel_id
+                            return MessageContext(
+                                user_id=str(user_id),
+                                channel_id=str(user_id),  # In Slack, settings are stored by channel_id
+                                thread_id=thread_id,
+                            )
+
+        return None
+
+    async def send_restart_notifications(self):
+        """Send restart notification to all active sessions."""
+        if self._restart_notified:
+            logger.info("Restart notifications already sent, skipping")
+            return
+
+        active_sessions = self.get_active_sessions()
+
+        if not active_sessions:
+            logger.info("No active sessions to notify about restart")
+            return
+
+        logger.info(f"Sending restart notifications to {len(active_sessions)} active session(s)")
+
+        notification_text = "🔄 Bot is restarting... Your session will resume shortly."
+
+        for composite_key, context in active_sessions:
+            try:
+                target_context = self._get_target_context(context)
+                await self.im_client.send_message(
+                    target_context,
+                    notification_text,
+                    parse_mode="markdown"
+                )
+                logger.info(f"Sent restart notification to session {composite_key}")
+            except Exception as e:
+                logger.warning(f"Failed to send restart notification to {composite_key}: {e}")
+
+        self._restart_notified = True
+        logger.info("Restart notifications sent successfully")
+
     # Main run method
     def run(self):
         """Run the controller"""
@@ -299,9 +405,11 @@ class Controller:
         # 清理职责改为：
         # - 仅当收到消息且开启 cleanup_enabled 时，在消息入口清理已完成任务（见 MessageHandler）
         # - 进程退出时做一次同步的 best-effort 取消（不跨循环 await）
+        # - 重启通知由 IM 客户端的信号处理器调用 on_shutdown 回调发送
 
         try:
             # Run the IM client (blocking)
+            # The IM client handles SIGTERM/SIGINT and calls our shutdown callback
             self.im_client.run()
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt, shutting down...")

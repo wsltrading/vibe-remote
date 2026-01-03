@@ -100,6 +100,8 @@ class BaseIMClient(ABC):
         self.on_message_callback: Optional[Callable] = None
         self.on_command_callbacks: Dict[str, Callable] = {}
         self.on_callback_query_callback: Optional[Callable] = None
+        # Shutdown callback for graceful restart notifications
+        self.on_shutdown_callback: Optional[Callable] = None
         # Platform-specific formatter will be set by subclasses
         self.formatter = None
     
@@ -225,19 +227,22 @@ class BaseIMClient(ABC):
                          on_message: Optional[Callable] = None,
                          on_command: Optional[Dict[str, Callable]] = None,
                          on_callback_query: Optional[Callable] = None,
+                         on_shutdown: Optional[Callable] = None,
                          **kwargs):
         """Register callback functions for different events
-        
+
         Args:
             on_message: Callback for text messages
             on_command: Dict of command callbacks
             on_callback_query: Callback for button clicks
+            on_shutdown: Async callback to run before shutdown (for restart notifications)
             **kwargs: Additional platform-specific callbacks
         """
         self.on_message_callback = on_message
         self.on_command_callbacks = on_command or {}
         self.on_callback_query_callback = on_callback_query
-        
+        self.on_shutdown_callback = on_shutdown
+
         # Store any additional callbacks
         for key, value in kwargs.items():
             setattr(self, f"{key}_callback", value)
