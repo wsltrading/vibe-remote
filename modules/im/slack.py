@@ -301,6 +301,26 @@ class SlackBot(BaseIMClient):
             logger.error(f"Error editing Slack message: {e}")
             return False
 
+    async def edit_message_text(
+        self,
+        channel_id: str,
+        thread_id: Optional[str],
+        message_id: str,
+        text: str,
+    ) -> bool:
+        """Edit a message's text by IDs (simpler interface for status updates)."""
+        self._ensure_clients()
+        try:
+            await self.web_client.chat_update(
+                channel=channel_id,
+                ts=message_id,
+                text=text,
+            )
+            return True
+        except SlackApiError as e:
+            logger.debug(f"Error editing message text: {e}")
+            return False
+
     async def answer_callback(
         self, callback_id: str, text: Optional[str] = None, show_alert: bool = False
     ) -> bool:

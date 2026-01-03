@@ -86,6 +86,8 @@ class AgentRequest:
     started_at: float = field(default_factory=time.monotonic)
     # Flag to indicate this is a PR creation request, show Merge PR button after success
     is_pr_creation: bool = False
+    # Status updater for periodic progress updates (managed externally)
+    status_updater: Optional[Any] = None
 
 
 @dataclass
