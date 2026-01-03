@@ -582,11 +582,19 @@ class SlackBot(BaseIMClient):
                     callback_data = action.get("action_id")
 
                     if self.on_callback_query_callback:
-                        # Create a context for the callback
+                        # Extract thread_ts from the message - this is CRITICAL for proper session tracking
+                        # The message may be in a thread (has thread_ts) or be a top-level message
+                        message = payload.get("message", {})
+                        # thread_ts indicates the parent message of the thread
+                        # If not present, the message's own ts is the thread root
+                        thread_id = message.get("thread_ts") or message.get("ts")
+
+                        # Create a context for the callback with thread_id preserved
                         context = MessageContext(
                             user_id=user.get("id"),
                             channel_id=channel_id,
-                            message_id=payload.get("message", {}).get("ts"),
+                            thread_id=thread_id,  # FIXED: Include thread_id for session tracking
+                            message_id=message.get("ts"),
                             platform_specific={
                                 "trigger_id": payload.get("trigger_id"),
                                 "response_url": payload.get("response_url"),
