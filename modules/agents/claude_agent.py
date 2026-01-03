@@ -383,8 +383,8 @@ class ClaudeAgent(BaseAgent):
                     if text:
                         # Get first line or truncate
                         first_line = text.split("\n")[0].strip()
-                        if len(first_line) > 60:
-                            first_line = first_line[:57] + "..."
+                        if len(first_line) > 140:
+                            first_line = first_line[:137] + "..."
                         return f"Thinking: {first_line}"
             return "Analyzing request"
 

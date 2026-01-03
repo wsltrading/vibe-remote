@@ -15,7 +15,7 @@ class StatusUpdater:
     updating the acknowledgement message with elapsed time and current activity.
     """
 
-    UPDATE_INTERVAL = 10  # seconds between updates
+    UPDATE_INTERVAL = 5  # seconds between updates
 
     def __init__(
         self,
