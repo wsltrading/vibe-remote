@@ -489,10 +489,48 @@ class TelegramBot(BaseIMClient):
 
     def format_markdown(self, text: str) -> str:
         """Format markdown text for Telegram using telegramify_markdown
-        
+
         Converts standard markdown to Telegram's MarkdownV2 format
         """
         return self._convert_to_markdownv2(text)
+
+    async def send_photo(
+        self,
+        context: MessageContext,
+        image_data: bytes,
+        caption: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> str:
+        """Send a photo/image to Telegram"""
+        bot = self.application.bot
+        chat_id = int(context.channel_id)
+
+        try:
+            import io
+
+            # Prepare file-like object
+            file_obj = io.BytesIO(image_data)
+            file_obj.name = filename or "screenshot.png"
+
+            kwargs = {"chat_id": chat_id, "photo": file_obj}
+
+            # Add caption if provided
+            if caption:
+                # Convert caption to MarkdownV2
+                markdownv2_caption = self._convert_to_markdownv2(caption)
+                kwargs["caption"] = markdownv2_caption
+                kwargs["parse_mode"] = "MarkdownV2"
+
+            # Handle reply
+            if context.thread_id:
+                kwargs["reply_to_message_id"] = int(context.thread_id)
+
+            message = await bot.send_photo(**kwargs)
+            return str(message.message_id)
+
+        except TelegramError as e:
+            logger.error(f"Error sending photo to Telegram: {e}")
+            raise
 
     def _is_authorized_chat(self, chat_id: int, chat_type: str) -> bool:
         """Check if a chat is authorized based on whitelist configuration"""

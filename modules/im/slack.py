@@ -1065,6 +1065,45 @@ class SlackBot(BaseIMClient):
             logger.error(f"Error sending slash command response: {e}")
             return False
 
+    async def send_photo(
+        self,
+        context: MessageContext,
+        image_data: bytes,
+        caption: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> str:
+        """Send a photo/image to Slack using files_upload_v2"""
+        self._ensure_clients()
+        try:
+            fname = filename or "screenshot.png"
+
+            # files_upload_v2 requires content as bytes directly
+            kwargs = {
+                "channel": context.channel_id,
+                "content": image_data,
+                "filename": fname,
+                "title": fname,
+            }
+
+            # Add caption as initial comment
+            if caption:
+                kwargs["initial_comment"] = caption
+
+            # Handle thread replies
+            if context.thread_id:
+                kwargs["thread_ts"] = context.thread_id
+
+            # Upload file using v2 API
+            response = await self.web_client.files_upload_v2(**kwargs)
+
+            # Return file id
+            file_info = response.get("file", {})
+            return file_info.get("id", "")
+
+        except SlackApiError as e:
+            logger.error(f"Error sending photo to Slack: {e}")
+            raise
+
     async def _is_authorized_channel(self, channel_id: str) -> bool:
         """Check if a channel is authorized based on whitelist configuration"""
         target_channel = self.config.target_channel

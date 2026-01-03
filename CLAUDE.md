@@ -129,6 +129,25 @@ Telegram supports traditional slash commands:
 
 The system dynamically loads the appropriate IM client based on `IM_PLATFORM`. Configuration validation ensures required tokens are present for the selected platform.
 
+### Chrome Extension Integration (Screenshots)
+
+The bot supports Chrome extension integration for taking screenshots via the `--chrome` flag. When enabled:
+
+1. **Requirements**:
+   - Install the Claude Chrome extension in your browser
+   - Keep Chrome browser running with the extension enabled
+   - Set `CLAUDE_CHROME_ENABLED=true` in your `.env` file
+
+2. **Usage**:
+   - Ask Claude to take a screenshot (e.g., "go to google.com and take a screenshot")
+   - The screenshot will be automatically sent as an image to your IM channel
+
+3. **How it works**:
+   - When `CLAUDE_CHROME_ENABLED=true`, the bot passes `--chrome` flag to Claude Code
+   - Claude can use browser automation tools via the Chrome extension
+   - Screenshots are captured and sent back as images in the ToolResultBlock
+   - The bot extracts base64-encoded images and sends them via platform-specific image APIs
+
 ## Adding New IM Platforms
 
 To extend support to new platforms (Discord, Teams, etc.):

@@ -32,6 +32,14 @@ class InlineKeyboard:
     buttons: list[list[InlineButton]]  # 2D array for row/column layout
 
 
+@dataclass
+class ImageData:
+    """Platform-agnostic image data"""
+    data: bytes  # Raw image bytes
+    media_type: str  # MIME type (e.g., "image/png", "image/jpeg")
+    filename: Optional[str] = None  # Optional filename
+
+
 # Configuration base class
 @dataclass
 class BaseIMConfig(ABC):
@@ -178,17 +186,35 @@ class BaseIMClient(ABC):
     async def answer_callback(self, callback_id: str, text: Optional[str] = None,
                             show_alert: bool = False) -> bool:
         """Answer a callback query from inline button
-        
+
         Args:
             callback_id: Callback query ID
             text: Optional notification text
             show_alert: Show as alert popup
-            
+
         Returns:
             Success status
         """
         pass
-    
+
+    @abstractmethod
+    async def send_photo(self, context: MessageContext,
+                        image_data: bytes,
+                        caption: Optional[str] = None,
+                        filename: Optional[str] = None) -> str:
+        """Send a photo/image
+
+        Args:
+            context: Message context (channel, thread, etc)
+            image_data: Raw image bytes (PNG, JPEG, etc)
+            caption: Optional caption text
+            filename: Optional filename for the image
+
+        Returns:
+            Message ID of sent message
+        """
+        pass
+
     @abstractmethod
     def register_handlers(self):
         """Register platform-specific message and command handlers"""

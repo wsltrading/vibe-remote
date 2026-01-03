@@ -77,12 +77,19 @@ class SessionHandler:
                 logger.error(f"Failed to create working directory {working_path}: {e}")
                 working_path = os.getcwd()
         
+        # Build extra_args if chrome is enabled
+        extra_args = {}
+        if getattr(self.config.claude, "chrome_enabled", False):
+            extra_args["chrome"] = None  # --chrome flag (no value needed)
+            logger.info("Chrome extension integration enabled")
+
         # Create options for Claude client
         options = ClaudeCodeOptions(
             permission_mode=self.config.claude.permission_mode,
             cwd=working_path,
             system_prompt=self.config.claude.system_prompt,
-            resume=stored_claude_session_id if stored_claude_session_id else None
+            resume=stored_claude_session_id if stored_claude_session_id else None,
+            extra_args=extra_args if extra_args else {},
         )
         
         # Log session creation details
