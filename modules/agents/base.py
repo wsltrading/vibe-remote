@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from modules.im import MessageContext
+
+if TYPE_CHECKING:
+    from core.status_updater import StatusUpdater
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,6 +27,7 @@ class AgentRequest:
     composite_session_id: str
     settings_key: str
     ack_message_id: Optional[str] = None
+    status_updater: Optional["StatusUpdater"] = None
     last_agent_message: Optional[str] = None
     last_agent_message_parse_mode: Optional[str] = None
     started_at: float = field(default_factory=time.monotonic)
@@ -73,6 +80,33 @@ class BaseAgent(ABC):
         await self.controller.emit_agent_message(
             context, "result", formatted, parse_mode=parse_mode
         )
+
+    async def _finalize_ack(
+        self,
+        request: AgentRequest,
+        delete_message: bool = True,
+        final_activity: Optional[str] = None,
+    ) -> None:
+        if request.status_updater:
+            await request.status_updater.stop(
+                delete_message=delete_message,
+                final_activity=final_activity,
+            )
+            request.status_updater = None
+            request.ack_message_id = None
+            return
+        if delete_message:
+            await self._delete_ack_message(request)
+
+    async def _delete_ack_message(self, request: AgentRequest) -> None:
+        ack_id = request.ack_message_id
+        if ack_id and hasattr(self.im_client, "delete_message"):
+            try:
+                await self.im_client.delete_message(request.context.channel_id, ack_id)
+            except Exception as err:
+                logger.debug(f"Could not delete ack message: {err}")
+            finally:
+                request.ack_message_id = None
 
     @abstractmethod
     async def handle_message(self, request: AgentRequest) -> None:

@@ -3,6 +3,7 @@
 import logging
 from typing import Optional
 
+from core.status_updater import StatusUpdater
 from modules.agents import AgentRequest
 from modules.im import MessageContext
 
@@ -46,6 +47,7 @@ class MessageHandler:
 
     async def handle_user_message(self, context: MessageContext, message: str):
         """Process regular user messages and route to configured agent"""
+        request = None
         try:
             # Safe cleanup: only remove completed receiver tasks when enabled
             if getattr(self.config, "cleanup_enabled", False):
@@ -77,10 +79,23 @@ class MessageHandler:
             ack_context = self._get_target_context(context)
             ack_text = self._get_ack_text(agent_name)
             ack_message_id = None
+            status_updater = None
             try:
                 ack_message_id = await self.im_client.send_message(
                     ack_context, ack_text
                 )
+                if (
+                    ack_message_id
+                    and self.config.platform == "slack"
+                    and hasattr(self.im_client, "edit_message")
+                ):
+                    status_updater = StatusUpdater(
+                        self.im_client,
+                        ack_context,
+                        ack_message_id,
+                        ack_text,
+                    )
+                    status_updater.start()
             except Exception as ack_err:
                 logger.debug(f"Failed to send ack message: {ack_err}")
 
@@ -92,16 +107,17 @@ class MessageHandler:
                 composite_session_id=composite_key,
                 settings_key=settings_key,
                 ack_message_id=ack_message_id,
+                status_updater=status_updater,
             )
             try:
                 await self.controller.agent_service.handle_message(agent_name, request)
             except KeyError:
                 await self._handle_missing_agent(context, agent_name)
-            finally:
-                if request.ack_message_id:
-                    await self._delete_ack(context.channel_id, request)
+                await self._finalize_request_status(request)
         except Exception as e:
             logger.error(f"Error processing user message: {e}", exc_info=True)
+            if "request" in locals() and request:
+                await self._finalize_request_status(request)
             await self.im_client.send_message(
                 context, self.formatter.format_error(f"Error: {str(e)}")
             )
@@ -222,6 +238,15 @@ class MessageHandler:
             "if this channel is routed to Codex."
         )
         await self.im_client.send_message(context, msg)
+
+    async def _finalize_request_status(self, request: AgentRequest) -> None:
+        if request.status_updater:
+            await request.status_updater.stop(delete_message=True)
+            request.status_updater = None
+            request.ack_message_id = None
+            return
+        if request.ack_message_id:
+            await self._delete_ack(request.context.channel_id, request)
 
     async def _delete_ack(self, channel_id: str, request: AgentRequest):
         """Delete acknowledgement message if it still exists."""
