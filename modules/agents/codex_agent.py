@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 
 from markdown_to_mrkdwn import SlackMarkdownConverter
 
+from core.status_updater import StatusUpdater
 from modules.agents.base import AgentRequest, BaseAgent
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class CodexAgent(BaseAgent):
         self.base_process_index: Dict[str, str] = {}
         self.composite_to_base: Dict[str, str] = {}
         self._initialized_sessions: set[str] = set()
+        self._status_updaters: Dict[str, StatusUpdater] = {}
         self._slack_markdown_converter = (
             SlackMarkdownConverter()
             if getattr(self.controller.config, "platform", None) == "slack"
@@ -73,15 +75,21 @@ class CodexAgent(BaseAgent):
                 "notify",
                 "❌ Codex CLI not found. Please install it or set CODEX_CLI_PATH.",
             )
+            await self._finalize_ack(request)
             return
         except Exception as e:
             logger.error(f"Failed to launch Codex CLI: {e}", exc_info=True)
             await self.controller.emit_agent_message(
                 request.context, "notify", f"❌ Failed to start Codex CLI: {e}"
             )
+            await self._finalize_ack(request)
             return
 
-        await self._delete_ack(request)
+        if request.status_updater:
+            request.status_updater.update_activity("Starting Codex task")
+            self._status_updaters[request.composite_session_id] = (
+                request.status_updater
+            )
 
         self.active_processes[request.composite_session_id] = (
             process,
@@ -112,6 +120,7 @@ class CodexAgent(BaseAgent):
                 "notify",
                 "⚠️ Codex exited with a non-zero status. Review stderr for details.",
             )
+        await self._stop_status(request, "Completed")
 
     async def clear_sessions(self, settings_key: str) -> int:
         self.settings_manager.clear_agent_sessions(settings_key, self.name)
@@ -260,6 +269,7 @@ class CodexAgent(BaseAgent):
                     system_text,
                     parse_mode=parse_mode,
                 )
+            self._update_status(request, "Initializing session")
             return
 
         if event_type == "item.completed":
@@ -268,6 +278,7 @@ class CodexAgent(BaseAgent):
             if item_type == "agent_message":
                 text = details.get("text", "")
                 if text:
+                    self._update_status(request, "Generating response")
                     await self.controller.emit_agent_message(
                         request.context, "assistant", text, parse_mode="markdown"
                     )
@@ -279,6 +290,8 @@ class CodexAgent(BaseAgent):
                 command = details.get("command")
                 output = details.get("aggregated_output", "")
                 status = details.get("status")
+                if command:
+                    self._update_status(request, f"Running {command}")
                 message_parts = [f"🛠️ `{command}` → {status}"]
                 if output:
                     snippet = output[-2000:]
@@ -292,6 +305,7 @@ class CodexAgent(BaseAgent):
             elif item_type == "reasoning":
                 text = details.get("text", "")
                 if text:
+                    self._update_status(request, "Reasoning")
                     await self.controller.emit_agent_message(
                         request.context,
                         "response",
@@ -305,6 +319,7 @@ class CodexAgent(BaseAgent):
             await self.controller.emit_agent_message(
                 request.context, "notify", f"❌ Codex error: {message}"
             )
+            await self._stop_status(request, "Error")
             return
 
         if event_type == "turn.failed":
@@ -314,6 +329,7 @@ class CodexAgent(BaseAgent):
             )
             request.last_agent_message = None
             request.last_agent_message_parse_mode = None
+            await self._stop_status(request, "Failed")
             return
 
         if event_type == "turn.completed":
@@ -330,19 +346,22 @@ class CodexAgent(BaseAgent):
                 )
                 request.last_agent_message = None
                 request.last_agent_message_parse_mode = None
+            await self._stop_status(request, "Completed")
             return
 
-    async def _delete_ack(self, request: AgentRequest):
-        ack_id = request.ack_message_id
-        if ack_id and hasattr(self.im_client, "delete_message"):
-            try:
-                await self.im_client.delete_message(
-                    request.context.channel_id, ack_id
-                )
-            except Exception as err:
-                logger.debug(f"Could not delete ack message: {err}")
-            finally:
-                request.ack_message_id = None
+    def _update_status(self, request: AgentRequest, activity: str) -> None:
+        updater = self._status_updaters.get(request.composite_session_id)
+        if updater and activity:
+            updater.update_activity(activity)
+
+    async def _stop_status(self, request: AgentRequest, final_activity: str) -> None:
+        updater = self._status_updaters.pop(request.composite_session_id, None)
+        if not updater:
+            updater = request.status_updater
+        if updater:
+            await updater.stop(delete_message=True, final_activity=final_activity)
+            request.status_updater = None
+            request.ack_message_id = None
 
     def _prepare_last_message_payload(
         self, text: str

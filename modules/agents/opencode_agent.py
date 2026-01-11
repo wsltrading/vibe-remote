@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 
+from core.status_updater import StatusUpdater
 from modules.agents.base import AgentRequest, BaseAgent
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_OPENCODE_PORT = 4096
 DEFAULT_OPENCODE_HOST = "127.0.0.1"
 SERVER_START_TIMEOUT = 15
+OPENCODE_REQUEST_RETRIES = 3
+OPENCODE_RETRY_BACKOFF_SECONDS = 2.0
 
 
 class OpenCodeServerManager:
@@ -435,6 +438,7 @@ class OpenCodeAgent(BaseAgent):
         self._active_requests: Dict[str, asyncio.Task] = {}
         self._request_sessions: Dict[str, Tuple[str, str, str]] = {}
         self._session_locks: Dict[str, asyncio.Lock] = {}
+        self._status_updaters: Dict[str, StatusUpdater] = {}
 
     async def _get_server(self) -> OpenCodeServerManager:
         if self._server_manager is None:
@@ -448,6 +452,58 @@ class OpenCodeAgent(BaseAgent):
         if base_session_id not in self._session_locks:
             self._session_locks[base_session_id] = asyncio.Lock()
         return self._session_locks[base_session_id]
+
+    @staticmethod
+    def _format_exception(exc: Exception) -> str:
+        message = str(exc).strip()
+        if message:
+            return f"{exc.__class__.__name__}: {message}"
+        return exc.__class__.__name__
+
+    async def _send_message_with_retry(
+        self,
+        request: AgentRequest,
+        server: OpenCodeServerManager,
+        session_id: str,
+        agent: Optional[str],
+        model: Optional[Dict[str, str]],
+        reasoning_effort: Optional[str],
+    ) -> Dict[str, Any]:
+        delay = OPENCODE_RETRY_BACKOFF_SECONDS
+        for attempt in range(1, OPENCODE_REQUEST_RETRIES + 1):
+            try:
+                return await server.send_message(
+                    session_id=session_id,
+                    directory=request.working_path,
+                    text=request.message,
+                    agent=agent,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                )
+            except asyncio.CancelledError:
+                raise
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+                if attempt >= OPENCODE_REQUEST_RETRIES:
+                    raise RuntimeError(
+                        "OpenCode request failed after "
+                        f"{OPENCODE_REQUEST_RETRIES} attempts: "
+                        f"{self._format_exception(exc)}"
+                    ) from exc
+                logger.warning(
+                    "OpenCode request attempt %s/%s failed: %s. Retrying in %.1fs",
+                    attempt,
+                    OPENCODE_REQUEST_RETRIES,
+                    self._format_exception(exc),
+                    delay,
+                )
+                self._update_status(
+                    request,
+                    f"OpenCode timeout, retrying ({attempt}/{OPENCODE_REQUEST_RETRIES})",
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+
+        raise RuntimeError("OpenCode request retries exhausted")
 
     async def handle_message(self, request: AgentRequest) -> None:
         lock = self._get_session_lock(request.base_session_id)
@@ -475,6 +531,9 @@ class OpenCodeAgent(BaseAgent):
                     "Previous OpenCode task cancelled. Starting the new request...",
                 )
 
+            if request.status_updater:
+                request.status_updater.update_activity("Starting OpenCode task")
+                self._status_updaters[request.base_session_id] = request.status_updater
             task = asyncio.create_task(self._process_message(request))
             self._active_requests[request.base_session_id] = task
 
@@ -490,6 +549,7 @@ class OpenCodeAgent(BaseAgent):
 
     async def _process_message(self, request: AgentRequest) -> None:
         try:
+            self._update_status(request, "Connecting to OpenCode server")
             server = await self._get_server()
             await server.ensure_running()
         except Exception as e:
@@ -499,9 +559,8 @@ class OpenCodeAgent(BaseAgent):
                 "notify",
                 f"Failed to start OpenCode server: {e}",
             )
+            await self._stop_status(request, "Failed")
             return
-
-        await self._delete_ack(request)
 
         if not os.path.exists(request.working_path):
             os.makedirs(request.working_path, exist_ok=True)
@@ -538,6 +597,7 @@ class OpenCodeAgent(BaseAgent):
                     "notify",
                     f"Failed to create OpenCode session: {e}",
                 )
+                await self._stop_status(request, "Failed")
                 return
         else:
             existing = await server.get_session(session_id, request.working_path)
@@ -566,6 +626,7 @@ class OpenCodeAgent(BaseAgent):
                         "notify",
                         f"Failed to create OpenCode session: {e}",
                     )
+                    await self._stop_status(request, "Failed")
                     return
 
         if not session_id:
@@ -574,6 +635,7 @@ class OpenCodeAgent(BaseAgent):
                 "notify",
                 "Failed to obtain OpenCode session ID",
             )
+            await self._stop_status(request, "Failed")
             return
 
         self._request_sessions[request.base_session_id] = (
@@ -614,10 +676,11 @@ class OpenCodeAgent(BaseAgent):
             if not reasoning_effort:
                 reasoning_effort = server.get_agent_reasoning_effort_from_config(agent_to_use)
 
-            response = await server.send_message(
+            self._update_status(request, "Waiting for OpenCode response")
+            response = await self._send_message_with_retry(
+                request=request,
+                server=server,
                 session_id=session_id,
-                directory=request.working_path,
-                text=request.message,
                 agent=agent_to_use,
                 model=model_dict,
                 reasoning_effort=reasoning_effort,
@@ -640,17 +703,35 @@ class OpenCodeAgent(BaseAgent):
                     subtype="warning",
                     started_at=request.started_at,
                 )
+            await self._stop_status(request, "Completed")
 
         except asyncio.CancelledError:
             logger.info(f"OpenCode request cancelled for {request.base_session_id}")
+            await self._stop_status(request, "Cancelled")
             raise
         except Exception as e:
-            logger.error(f"OpenCode request failed: {e}", exc_info=True)
+            error_detail = self._format_exception(e)
+            logger.error(f"OpenCode request failed: {error_detail}", exc_info=True)
             await self.controller.emit_agent_message(
                 request.context,
                 "notify",
-                f"OpenCode request failed: {e}",
+                f"OpenCode request failed: {error_detail}",
             )
+            await self._stop_status(request, "Failed")
+
+    def _update_status(self, request: AgentRequest, activity: str) -> None:
+        updater = self._status_updaters.get(request.base_session_id)
+        if updater and activity:
+            updater.update_activity(activity)
+
+    async def _stop_status(self, request: AgentRequest, final_activity: str) -> None:
+        updater = self._status_updaters.pop(request.base_session_id, None)
+        if not updater:
+            updater = request.status_updater
+        if updater:
+            await updater.stop(delete_message=True, final_activity=final_activity)
+            request.status_updater = None
+            request.ack_message_id = None
 
     def _extract_response_text(self, response: Dict[str, Any]) -> str:
         parts = response.get("parts", [])
@@ -714,12 +795,3 @@ class OpenCodeAgent(BaseAgent):
                     terminated += 1
         return terminated
 
-    async def _delete_ack(self, request: AgentRequest):
-        ack_id = request.ack_message_id
-        if ack_id and hasattr(self.im_client, "delete_message"):
-            try:
-                await self.im_client.delete_message(request.context.channel_id, ack_id)
-            except Exception as err:
-                logger.debug(f"Could not delete ack message: {err}")
-            finally:
-                request.ack_message_id = None

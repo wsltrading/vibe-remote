@@ -3,7 +3,9 @@ import logging
 import os
 from typing import Callable, Optional
 
-from claude_code_sdk import TextBlock
+from claude_code_sdk import TextBlock, ToolResultBlock, ToolUseBlock
+
+from core.status_updater import StatusUpdater
 
 from modules.agents.base import AgentRequest, BaseAgent
 from modules.im import MessageContext
@@ -24,6 +26,7 @@ class ClaudeAgent(BaseAgent):
         self.claude_sessions = controller.claude_sessions
         self.claude_client = controller.claude_client
         self._last_assistant_text: dict[str, str] = {}
+        self._status_updaters: dict[str, StatusUpdater] = {}
 
     async def handle_message(self, request: AgentRequest) -> None:
         context = request.context
@@ -38,7 +41,11 @@ class ClaudeAgent(BaseAgent):
                 f"Sent message to Claude for session {request.composite_session_id}"
             )
 
-            await self._delete_ack(context, request)
+            if request.status_updater:
+                request.status_updater.update_activity("Waiting for Claude response")
+                self._status_updaters[request.composite_session_id] = (
+                    request.status_updater
+                )
 
             if (
                 request.composite_session_id not in self.receiver_tasks
@@ -54,8 +61,7 @@ class ClaudeAgent(BaseAgent):
             await self.session_handler.handle_session_error(
                 request.composite_session_id, context, e
             )
-        finally:
-            await self._delete_ack(context, request)
+            await self._finalize_ack(request)
 
     async def clear_sessions(self, settings_key: str) -> int:
         """Clear Claude sessions scoped to the provided settings key."""
@@ -123,9 +129,9 @@ class ClaudeAgent(BaseAgent):
         context: MessageContext,
     ):
         """Receive messages from Claude SDK client."""
+        composite_key = f"{base_session_id}:{working_path}"
         try:
             settings_key = self.controller._get_settings_key(context)
-            composite_key = f"{base_session_id}:{working_path}"
             async for message in client.receive_messages():
                 try:
                     claude_session_id = self._maybe_capture_session_id(
@@ -141,7 +147,12 @@ class ClaudeAgent(BaseAgent):
 
                     message_type = self._detect_message_type(message)
                     formatted_message = None
+                    if message_type == "system":
+                        self._update_status(composite_key, "Initializing session")
                     if message_type == "assistant":
+                        activity = self._describe_activity(message)
+                        if activity:
+                            self._update_status(composite_key, activity)
                         formatted_message = self.claude_client.format_message(
                             message,
                             get_relative_path=lambda path: self.get_relative_path(
@@ -156,6 +167,7 @@ class ClaudeAgent(BaseAgent):
                         ):
                             continue
                     elif message_type == "result":
+                        self._update_status(composite_key, "Finishing response")
                         if self.settings_manager.is_message_type_hidden(
                             settings_key, message_type
                         ):
@@ -180,6 +192,7 @@ class ClaudeAgent(BaseAgent):
                             parse_mode="markdown",
                             suffix=suffix,
                         )
+                        await self._stop_status(composite_key, "Completed")
                         self._last_assistant_text.pop(composite_key, None)
                         session = await self.session_manager.get_or_create_session(
                             context.user_id, context.channel_id
@@ -190,6 +203,9 @@ class ClaudeAgent(BaseAgent):
                             ] = False
                         continue
                     else:
+                        activity = self._describe_activity(message)
+                        if activity:
+                            self._update_status(composite_key, activity)
                         if message_type and self.settings_manager.is_message_type_hidden(
                             settings_key, message_type
                         ):
@@ -214,38 +230,18 @@ class ClaudeAgent(BaseAgent):
                         formatted_message,
                         parse_mode="markdown",
                     )
-
-                    if message_type == "result":
-                        self._last_assistant_text.pop(composite_key, None)
-                        session = await self.session_manager.get_or_create_session(
-                            context.user_id, context.channel_id
-                        )
-                        if session:
-                            session.session_active[
-                                f"{base_session_id}:{working_path}"
-                            ] = False
                 except Exception as e:
                     logger.error(
                         f"Error processing message from Claude: {e}", exc_info=True
                     )
                     continue
         except Exception as e:
-            composite_key = f"{base_session_id}:{working_path}"
             logger.error(
                 f"Error in Claude receiver for session {composite_key}: {e}",
                 exc_info=True,
             )
+            await self._stop_status(composite_key, "Error")
             await self.session_handler.handle_session_error(composite_key, context, e)
-
-    async def _delete_ack(self, context: MessageContext, request: AgentRequest):
-        ack_id = request.ack_message_id
-        if ack_id and hasattr(self.im_client, "delete_message"):
-            try:
-                await self.im_client.delete_message(context.channel_id, ack_id)
-            except Exception as err:
-                logger.debug(f"Could not delete ack message: {err}")
-            finally:
-                request.ack_message_id = None
 
     def get_relative_path(
         self, abs_path: str, context: Optional[MessageContext] = None
@@ -272,6 +268,36 @@ class ClaudeAgent(BaseAgent):
                 platform_specific=context.platform_specific,
             )
         return context
+
+    def _get_status_updater(self, composite_key: str) -> Optional[StatusUpdater]:
+        return self._status_updaters.get(composite_key)
+
+    def _update_status(self, composite_key: str, activity: str) -> None:
+        updater = self._get_status_updater(composite_key)
+        if updater and activity:
+            updater.update_activity(activity)
+
+    async def _stop_status(self, composite_key: str, final_activity: str) -> None:
+        updater = self._status_updaters.pop(composite_key, None)
+        if updater:
+            await updater.stop(delete_message=True, final_activity=final_activity)
+
+    def _describe_activity(self, message) -> Optional[str]:
+        content = getattr(message, "content", []) or []
+        for block in content:
+            if isinstance(block, ToolUseBlock):
+                return f"Running {block.name}"
+        for block in content:
+            if isinstance(block, ToolResultBlock):
+                return "Processing tool result"
+        for block in content:
+            if isinstance(block, TextBlock):
+                text = block.text.strip() if block.text else ""
+                if text:
+                    preview = text.splitlines()[0]
+                    preview = preview[:80]
+                    return f"Thinking: {preview}"
+        return None
 
     def _maybe_capture_session_id(
         self,

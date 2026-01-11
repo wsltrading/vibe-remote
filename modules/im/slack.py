@@ -282,6 +282,16 @@ class SlackBot(BaseIMClient):
             logger.error(f"Error editing Slack message: {e}")
             return False
 
+    async def delete_message(self, channel_id: str, message_id: str) -> bool:
+        """Delete an existing Slack message"""
+        self._ensure_clients()
+        try:
+            await self.web_client.chat_delete(channel=channel_id, ts=message_id)
+            return True
+        except SlackApiError as e:
+            logger.error(f"Error deleting Slack message: {e}")
+            return False
+
     async def answer_callback(
         self, callback_id: str, text: Optional[str] = None, show_alert: bool = False
     ) -> bool:
